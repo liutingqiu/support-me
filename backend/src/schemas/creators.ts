@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { assetCode, stellarAddress } from "./common";
 import { contrastRatio, WCAG_AA_TEXT } from "../lib/contrast";
+import { isReservedUsername } from "../lib/reservedUsernames";
 
 export const usernameParamSchema = z.object({
   username: z.string().min(1, "username is required"),
@@ -44,7 +45,11 @@ export const createCreatorSchema = z.object({
 export const createCreatorParamsSchema = z.object({
   username: z
     .string()
-    .regex(usernamePattern, "username must be 3-30 characters (letters, numbers, _ or -)"),
+    .regex(usernamePattern, "username must be 3-30 characters (letters, numbers, _ or -)")
+    .refine((username) => !isReservedUsername(username), {
+      // The form surfaces details[0].message, so this is what a creator sees.
+      message: "This username is reserved. Please choose a different one.",
+    }),
 });
 
 export const updateCreatorSchema = z.object({
