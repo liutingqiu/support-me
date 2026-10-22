@@ -53,7 +53,7 @@ describe("GET /api/creators", () => {
       pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
     });
     expect(mockedPrisma.creator.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ orderBy: { createdAt: "desc" }, where: undefined })
+      expect.objectContaining({ orderBy: { createdAt: "desc" }, where: { walletAddress: { not: null } } })
     );
   });
 
@@ -68,6 +68,7 @@ describe("GET /api/creators", () => {
       expect.objectContaining({
         orderBy: { donations: { _count: "desc" } },
         where: {
+          walletAddress: { not: null },
           OR: [
             { username: { contains: "jane", mode: "insensitive" } },
             { displayName: { contains: "jane", mode: "insensitive" } },
@@ -146,7 +147,12 @@ describe("GET /api/creators/:username", () => {
 // registering the challenge the real /api/auth/challenge endpoint would issue.
 function proveWallet(keypair: Keypair): string {
   const message = `Sign in to SupportMe\n\nAddress: ${keypair.publicKey()}\nNonce: test-nonce\nIssued At: now`;
-  challenges.set(keypair.publicKey(), { message, expiresAt: Date.now() + 60_000 });
+  challenges.set(keypair.publicKey(), {
+    id: `test-challenge-${keypair.publicKey()}`,
+    walletAddress: keypair.publicKey(),
+    message,
+    expiresAt: Date.now() + 60_000,
+  });
   const { createHash } = jest.requireActual("crypto") as typeof import("crypto");
   const hash = createHash("sha256")
     .update(Buffer.concat([Buffer.from("Stellar Signed Message:\n"), Buffer.from(message)]))
@@ -157,6 +163,13 @@ function proveWallet(keypair: Keypair): string {
 describe("POST /api/creators/:username/create", () => {
   const OWN_WALLET = "GA7D5LDGFABXNYEO6LZVMTWK5JWEPTODCLYZ7TG4XDZRKKXP6OS5K5JW";
   const token = generateToken(1, OWN_WALLET);
+
+  it.each(["javascript:alert(1)", "https://example.com/avatar.png"])("rejects invalid avatarUrl %s before creating a profile", async (avatarUrl) => {
+    const res = await request(app).post("/api/creators/urlcreator/create")
+      .set("Authorization", `Bearer ${token}`).send({ avatarUrl });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("VALIDATION_ERROR");
+  });
 
   it("rejects requests without an auth token", async () => {
     const res = await request(app).post("/api/creators/bob/create").send({});
@@ -251,6 +264,20 @@ describe("POST /api/creators/:username/create", () => {
 
 describe("PUT /api/creators/:username", () => {
   const token = generateToken(1, "GUSERADDRESS");
+
+  it.each([
+    { avatarUrl: "javascript:alert(1)" },
+    { avatarUrl: "https://example.com/avatar.png" },
+    { socialLinks: { twitter: "javascript:alert(1)" } },
+    { socialLinks: { website: "data:text/html,hello" } },
+    { socialLinks: { unknown: "https://example.com" } },
+  ])("returns 400 for invalid profile URLs: %j", async (body) => {
+    const res = await request(app).put("/api/creators/bob")
+      .set("Authorization", `Bearer ${token}`).send(body);
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("VALIDATION_ERROR");
+    expect(mockedPrisma.creator.update).not.toHaveBeenCalled();
+  });
 
   it("rejects requests without an auth token", async () => {
     const res = await request(app).put("/api/creators/bob").send({ bio: "hi" });
@@ -502,7 +529,7 @@ describe("GET /api/creators/leaderboard (#16)", () => {
     expect(mockedPrisma.donation.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({
         by: ["creatorId"],
-        where: { currency: "XLM" },
+        where: { currency: "XLM", creator: { walletAddress: { not: null } } },
         orderBy: { _sum: { amount: "desc" } },
       })
     );
@@ -539,7 +566,7 @@ describe("GET /api/creators/leaderboard (#16)", () => {
     expect(res.status).toBe(200);
     expect(res.body.currency).toBe("USDC");
     expect(mockedPrisma.donation.groupBy).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { currency: "USDC" } })
+      expect.objectContaining({ where: { currency: "USDC", creator: { walletAddress: { not: null } } } })
     );
   });
 
@@ -722,7 +749,12 @@ describe("Creator wallet binding (#276)", () => {
       const victim = Keypair.random();
       const attacker = Keypair.random();
       const message = `Sign in to SupportMe\n\nAddress: ${victim.publicKey()}\nNonce: n\nIssued At: now`;
-      challenges.set(victim.publicKey(), { message, expiresAt: Date.now() + 60_000 });
+      challenges.set(victim.publicKey(), {
+        id: `test-challenge-${victim.publicKey()}`,
+        walletAddress: victim.publicKey(),
+        message,
+        expiresAt: Date.now() + 60_000,
+      });
       const { createHash } = jest.requireActual("crypto") as typeof import("crypto");
       const hash = createHash("sha256")
         .update(Buffer.concat([Buffer.from("Stellar Signed Message:\n"), Buffer.from(message)]))
@@ -828,7 +860,7 @@ describe("Creator wallet binding (#276)", () => {
 
       expect(res.status).toBe(201);
       expect(mockedPrisma.creator.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({ walletAddress: "" }),
+        data: expect.objectContaining({ walletAddress: null }),
       });
       // No wallet to bind, so the only lookup is the username check.
       expect(mockedPrisma.creator.findFirst).toHaveBeenCalledTimes(1);
@@ -904,7 +936,7 @@ describe("Creator wallet binding (#276)", () => {
     });
 
     it("allows switching to the wallet the user signed in with, without a signature", async () => {
-      mockedPrisma.creator.findUnique.mockResolvedValue({ ...existing, walletAddress: "" });
+      mockedPrisma.creator.findUnique.mockResolvedValue({ ...existing, walletAddress: null });
 
       const res = await request(app)
         .put("/api/creators/bob")
